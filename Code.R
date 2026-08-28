@@ -1,32 +1,6 @@
-# =============================================================================
-# GARCH-MIDAS / DCC-MIDAS WITH STRUCTURAL BREAKS
-# Estimating Conditional Volatility and Dynamic Correlations:
-# BTC vs Global Equity/Bond/Commodity Indices
-# Author  : NGUYEN HAI DUY 
-# Date    : 23/05/2026
-# Purpose : Full estimation pipeline — GARCH-MIDAS and
-#           DCC-MIDAS — with optional Bai-Perron structural
-#           breaks in GEPU, hedging effectiveness analysis, and model
-#           comparison tests (LR, Wald, DM, CW).
-# =============================================================================
-#
-# STRUCTURE
-#   SECTION 0  — Setup: libraries, utility functions
-#   SECTION 1  — Standard error helpers 
-#   SECTION 2  — Bai-Perron structural break test & dummy construction
-#   SECTION 3  — Mean model (AR-BIC selection)
-#   SECTION 4  — GARCH-MIDAS likelihood & estimation 
-#   SECTION 5  — DCC-MIDAS likelihood variants & estimation 
-#   SECTION 6  — Output formatting helpers
-#   SECTION 7  — Configuration & data loading
-#   SECTION 8  — Main execution: estimation, tables, hedging, tests
-# =============================================================================
+# A. =========================================================================== ------------ ENGINEER ------------ ===================================================================== 
 
-
-# =============================================================================
-# 0. SETUP
-# =============================================================================
-
+# 0. SETUP ===================================================================================================================================================
 
 library(roll)
 library(xts)
@@ -52,8 +26,7 @@ safe_QMLE_se <- function(est, ll_func = NULL, ll_args = NULL,
 
   n_params <- length(coef(est))
   param_names <- names(coef(est))
-
-  #Method 1: QMLE sandwich SE (package default)
+  
   se_qmle <- tryCatch(QMLE_sd_pkg(est), error = function(e) NULL)
   if (!is.null(se_qmle) && all(!is.na(se_qmle)) && all(is.finite(se_qmle))) {
     cat("  [SE] QMLE sandwich SE: OK\n")
@@ -61,10 +34,8 @@ safe_QMLE_se <- function(est, ll_func = NULL, ll_args = NULL,
   }
   cat("  [SE] QMLE sandwich failed.\n")
 
-  #Method 2: Numerical Hessian with boundary check
   if (!is.null(ll_func) && !is.null(ll_args)) {
 
-    # --- Check for boundary solutions first ---
     theta_hat <- coef(est)
     boundary_flags <- c()
     if ("alpha" %in% param_names && theta_hat["alpha"] < 0.005)
@@ -83,7 +54,6 @@ safe_QMLE_se <- function(est, ll_func = NULL, ll_args = NULL,
       cat("        SEs may be unreliable. Consider re-estimating with wider grid.\n")
     }
 
-    # --- Numerical Hessian ---
     sum_ll <- function(p) {
       args <- c(list(param = p), ll_args)
       sum(do.call(ll_func, args))
@@ -94,7 +64,7 @@ safe_QMLE_se <- function(est, ll_func = NULL, ll_args = NULL,
     }, error = function(e) NULL)
 
     if (!is.null(H) && all(is.finite(H))) {
-      # Check condition number for near-singularity
+   
       cond_num <- tryCatch(kappa(H, exact = TRUE), error = function(e) Inf)
       if (cond_num < 1e12) {
         inv_H <- tryCatch(solve(H), error = function(e) NULL)
@@ -117,25 +87,19 @@ safe_QMLE_se <- function(est, ll_func = NULL, ll_args = NULL,
     }
   }
 
-  #Method 3: Outer Product of Gradients (OPG / BHHH) sandwich SE
   if (!is.null(ll_func) && !is.null(ll_args)) {
     cat("  [SE] Trying OPG sandwich estimator...\n")
 
     se_opg <- tryCatch({
       theta_hat <- coef(est)
 
-      # Compute score (gradient) for each observation
       G <- numDeriv::jacobian(func = function(p) {
         args <- c(list(param = p), ll_args)
-        do.call(ll_func, args)  # returns vector of per-obs LL
+        do.call(ll_func, args) 
       }, x = theta_hat)
 
-      # G is [T x n_params] matrix of per-observation scores
-      # OPG estimator: V = (G'G)^{-1}
-      # Sandwich: V = A^{-1} B A^{-1} where A = -H, B = G'G
-      B <- crossprod(G)  # G'G [n_params x n_params]
+      B <- crossprod(G)  #
 
-      # Try sandwich if Hessian available, otherwise use OPG only
       sum_ll_local <- function(p) {
         args <- c(list(param = p), ll_args)
         sum(do.call(ll_func, args))
@@ -143,14 +107,12 @@ safe_QMLE_se <- function(est, ll_func = NULL, ll_args = NULL,
       A <- tryCatch(-numDeriv::hessian(sum_ll_local, theta_hat), error = function(e) NULL)
 
       if (!is.null(A) && all(is.finite(A)) && kappa(A) < 1e12) {
-        # Full sandwich: A^{-1} B A^{-1}
         A_inv <- solve(A)
         V_sandwich <- A_inv %*% B %*% A_inv
         se_vals <- sqrt(pmax(diag(V_sandwich), 0))
         cat("  [SE] OPG sandwich: OK\n")
         se_vals
       } else {
-        # OPG only: (G'G)^{-1}
         V_opg <- solve(B)
         se_vals <- sqrt(pmax(diag(V_opg), 0))
         cat("  [SE] OPG (no sandwich, Hessian unavailable): OK\n")
@@ -164,7 +126,6 @@ safe_QMLE_se <- function(est, ll_func = NULL, ll_args = NULL,
     if (!is.null(se_opg) && any(!is.na(se_opg))) return(se_opg)
   }
 
-  #Method 4: Parametric bootstrap SE
   if (!is.null(ll_func) && !is.null(ll_args) && !is.null(daily_ret)) {
     cat("  [SE] Trying parametric bootstrap (n=", n_boot, ")...\n")
 
@@ -173,8 +134,6 @@ safe_QMLE_se <- function(est, ll_func = NULL, ll_args = NULL,
       TT <- length(daily_ret)
       boot_params <- matrix(NA, nrow = n_boot, ncol = n_params)
 
-      # Reconstruct fitted volatility from original estimates
-      # Use the LL function to get fitted values
       orig_ll <- do.call(ll_func, c(list(param = theta_hat), ll_args))
 
       successful <- 0
@@ -184,7 +143,6 @@ safe_QMLE_se <- function(est, ll_func = NULL, ll_args = NULL,
       while (successful < n_boot && attempts < max_attempts) {
         attempts <- attempts + 1
 
-        # Resample residuals (block bootstrap to preserve some dependence)
         block_size <- max(5L, round(TT^(1/3)))
         n_blocks <- ceiling(TT / block_size)
         block_starts <- sample(1:(TT - block_size + 1), n_blocks, replace = TRUE)
@@ -193,7 +151,6 @@ safe_QMLE_se <- function(est, ll_func = NULL, ll_args = NULL,
 
         boot_ret <- daily_ret[indices]
 
-        # Re-estimate with bootstrapped returns
         boot_ll_args <- ll_args
         boot_ll_args$daily_ret <- as.numeric(boot_ret)
 
@@ -227,7 +184,6 @@ safe_QMLE_se <- function(est, ll_func = NULL, ll_args = NULL,
       cat("    Bootstrap completed:", successful, "successful out of", attempts, "attempts\n")
 
       if (successful >= 30) {
-        # SE = standard deviation of bootstrap parameter estimates
         se_vals <- apply(boot_params[1:successful, ], 2, sd, na.rm = TRUE)
         cat("  [SE] Bootstrap SE: OK\n")
         se_vals
@@ -243,7 +199,6 @@ safe_QMLE_se <- function(est, ll_func = NULL, ll_args = NULL,
     if (!is.null(se_boot) && any(!is.na(se_boot))) return(se_boot)
   }
 
-  #Method 5: Profile likelihood CI (fallback for individual params)
   if (!is.null(ll_func) && !is.null(ll_args)) {
     cat("  [SE] Trying profile likelihood for individual parameters...\n")
 
@@ -253,10 +208,8 @@ safe_QMLE_se <- function(est, ll_func = NULL, ll_args = NULL,
       se_vals <- rep(NA, n_params)
 
       for (j in 1:n_params) {
-        # Search for the interval where LL drops by 1.92 (chi2_1 / 2 for 95% CI)
         target <- max_ll - 1.92
 
-        # Profile: fix param j, optimize over the rest
         profile_ll <- function(pj) {
           opt_func <- function(p_rest) {
             p_full <- theta_hat
@@ -274,14 +227,12 @@ safe_QMLE_se <- function(est, ll_func = NULL, ll_args = NULL,
           return(-opt$value)
         }
 
-        # Find upper bound
         upper <- tryCatch({
           uniroot(function(pj) profile_ll(pj) - target,
                   interval = c(theta_hat[j], theta_hat[j] + 5 * abs(theta_hat[j]) + 1),
                   extendInt = "upX", maxiter = 30)$root
         }, error = function(e) NA)
 
-        # Find lower bound
         lower <- tryCatch({
           uniroot(function(pj) profile_ll(pj) - target,
                   interval = c(theta_hat[j] - 5 * abs(theta_hat[j]) - 1, theta_hat[j]),
@@ -289,7 +240,6 @@ safe_QMLE_se <- function(est, ll_func = NULL, ll_args = NULL,
         }, error = function(e) NA)
 
         if (!is.na(upper) && !is.na(lower)) {
-          # Convert 95% CI width to approximate SE
           se_vals[j] <- (upper - lower) / (2 * 1.96)
           cat("    param", j, "(", param_names[j], "): profile CI [",
               round(lower, 4), ",", round(upper, 4), "] -> SE =", round(se_vals[j], 4), "\n")
@@ -310,7 +260,6 @@ safe_QMLE_se <- function(est, ll_func = NULL, ll_args = NULL,
     if (!is.null(se_profile) && any(!is.na(se_profile))) return(se_profile)
   }
 
-  #Method 5: Profile likelihood CI (fallback for individual params)
   cat("  [SE] ALL METHODS FAILED. Returning NAs.\n")
   cat("  [SE] This typically indicates:\n")
   cat("        - Flat likelihood surface (weak identification)\n")
@@ -321,7 +270,7 @@ safe_QMLE_se <- function(est, ll_func = NULL, ll_args = NULL,
 
 
 # =============================================================================
-# SECTION 2  — Bai-Perron Structural Break Test & Dummy Variable Construction
+# SECTION 1  — Bai-Perron Structural Break Test & Dummy Variable Construction
 # =============================================================================
 
 bai_perron_test <- function(series, max_breaks = NULL,
@@ -330,8 +279,7 @@ bai_perron_test <- function(series, max_breaks = NULL,
   library(strucchange)
   library(ggplot2)
   library(xts)
-
-  # --- Input validation ---
+  
   if (!inherits(series, "xts")) stop("Error: Input must be an xts time series.")
 
   if (!is.null(start_date) && !is.null(end_date)) {
@@ -344,10 +292,7 @@ bai_perron_test <- function(series, max_breaks = NULL,
   if (any(is.na(numeric_values)) || length(numeric_values) < 10) {
     stop("Error: The series contains NAs or is too short for analysis.")
   }
-
-  # Run breakpoints with maximum feasible candidates 
-  # If max_breaks not specified, strucchange uses default trimming (h ~ 0.15)
-  # which on T=88 monthly obs gives up to floor(0.85*88/13) ~ 5 breaks
+  
   if (is.null(max_breaks)) {
     bp_result <- breakpoints(numeric_values ~ 1)
     max_candidates <- length(bp_result$breakpoints)
@@ -362,23 +307,20 @@ bai_perron_test <- function(series, max_breaks = NULL,
   cat(sprintf("Sample size T = %d, max candidate breaks = %d\n",
               length(numeric_values), max_candidates))
 
-  # Compute BIC for each candidate model 0, 1, ..., max_candidates 
   bic_vals <- numeric(max_candidates + 1)
-  bic_vals[1] <- BIC(lm(numeric_values ~ 1))   # zero-break model
+  bic_vals[1] <- BIC(lm(numeric_values ~ 1))  
 
   for (nb in 1:max_candidates) {
     bp_nb <- tryCatch(breakpoints(bp_result, breaks = nb),
                       error = function(e) NULL)
     if (!is.null(bp_nb)) {
-      # AIC(., k = log(T)) is the standard BIC formula
       bic_vals[nb + 1] <- AIC(bp_nb, k = log(length(numeric_values)))
     } else {
       bic_vals[nb + 1] <- Inf
     }
   }
 
-  # BIC-optimal number of breaks
-  bic_optimal <- which.min(bic_vals) - 1L   # subtract 1 because index 1 = 0 breaks
+  bic_optimal <- which.min(bic_vals) - 1L   
 
   cat("\nBIC values by # of breaks:\n")
   for (nb in 0:max_candidates) {
@@ -386,7 +328,6 @@ bai_perron_test <- function(series, max_breaks = NULL,
     cat(sprintf("  %d breaks: BIC = %.4f%s\n", nb, bic_vals[nb + 1], flag))
   }
 
-  # supF test for "any breaks vs. none" 
   fs_test <- tryCatch(sctest(Fstats(numeric_values ~ 1), type = "supF"),
                       error = function(e) NULL)
   supF_significant <- !is.null(fs_test) && fs_test$p.value < min_supF_pval
@@ -402,7 +343,6 @@ bai_perron_test <- function(series, max_breaks = NULL,
     cat("  supF test failed to run.\n")
   }
 
-  # Decide final number of breaks 
   if (selection == "BIC") {
     n_breaks_final <- bic_optimal
   } else if (selection == "supF") {
@@ -411,8 +351,6 @@ bai_perron_test <- function(series, max_breaks = NULL,
     stop("selection must be 'BIC' or 'supF'")
   }
 
-  # Guard rail: even if BIC suggests breaks, require supF significance
-  # (prevents BIC from picking up trivial level shifts)
   if (n_breaks_final > 0 && !supF_significant) {
     cat(sprintf("\nNOTE: BIC suggests %d break(s), but supF cannot reject 'no breaks' at %.0f%%.\n",
                 n_breaks_final, min_supF_pval * 100))
@@ -420,7 +358,6 @@ bai_perron_test <- function(series, max_breaks = NULL,
     n_breaks_final <- 0L
   }
 
-  # Handle zero-break case (return early with empty result) 
   if (n_breaks_final == 0) {
     cat("\nFINAL DECISION: 0 breaks selected. SB models will reduce to no-SB models.\n")
     cat(strrep("=", 60), "\n\n")
@@ -435,12 +372,10 @@ bai_perron_test <- function(series, max_breaks = NULL,
                 confidence_intervals     = NULL))
   }
 
-  # Extract final breakpoints (n_breaks_final > 0) 
   bp_final <- breakpoints(bp_result, breaks = n_breaks_final)
   breakpoints_index <- bp_final$breakpoints
   breakpoint_dates <- time_index[breakpoints_index]
 
-  # 95% confidence intervals 
   ci_bp <- tryCatch(confint(bp_result, breaks = n_breaks_final),
                     error = function(e) NULL)
 
@@ -517,13 +452,10 @@ create_dummy_variables <- function(breakpoints_dates, series) {
   n <- length(breakpoints)
   dummy_vars <- vector("list", n)
 
-  # Append start (0) and end (length) sentinels
   partition_pts <- c(0, breakpoints, length(series))
 
-  # For each regime j = 1..n: dummy_j = 1 in regime j, 0 elsewhere
   for (i in seq_len(n)) {
     dummy <- rep(0, length(series))
-    # Regime i corresponds to interval (partition_pts[i+1], partition_pts[i+2]]
     dummy[(partition_pts[i + 1] + 1):partition_pts[i + 2]] <- 1
     dummy_vars[[i]] <- xts(dummy, order.by = time_index)
   }
@@ -532,33 +464,21 @@ create_dummy_variables <- function(breakpoints_dates, series) {
   return(dummy_vars)
 }
 
-# Convert dummy variables in daily frequency
 convert_monthly_to_daily <- function(monthly_series, trading_dates = NULL) {
-  # Ensure input is an xts object
   if (!inherits(monthly_series, "xts")) {
     stop("Error: The input series must be an xts object.")
   }
 
-  # Extract time index and values
   monthly_dates <- index(monthly_series)
   values <- as.numeric(monthly_series)
 
-  # ===== FIX: Support trading-day alignment =====
   if (!is.null(trading_dates)) {
-    # Align dummies to actual trading dates
-    # Each trading date inherits the dummy value of its corresponding month
     trading_dates <- as.Date(trading_dates)
-
-    # Floor trading dates to month start
     trading_months <- floor_date(trading_dates, "month")
-
-    # Match each trading date to its monthly value
     monthly_df <- data.frame(
       month = floor_date(monthly_dates, "month"),
       value = values
     )
-
-    # Lookup values
     matched_values <- monthly_df$value[match(trading_months, monthly_df$month)]
 
     # Handle NAs (trading dates outside monthly series range)
@@ -584,18 +504,11 @@ convert_monthly_to_daily <- function(monthly_series, trading_dates = NULL) {
   return(daily_series)
 }
 
-# Transform it into appropriate format to be compatible with model calculation
 add_xts_matrix <- function(D_series, row, col, start_date, end_date) {
   XXX <- D_series[paste(start_date, end_date, sep = "/")]
   XXX_vec <- as.numeric(XXX)
 
   actual_len <- length(XXX_vec)
-
-  # ===== Dimension check =====
-  # Dummy vector should have length = col (= number of trading days)
-  # Each trading day has ONE dummy value (0 or 1)
-  # The matrix output shape is [row x col] where each column repeats the dummy value 'row' times
-  # This is because MV matrix stores K+1 lags per trading day, but dummy value is constant across lags
 
   if (actual_len != col) {
     stop(sprintf(
@@ -606,34 +519,26 @@ add_xts_matrix <- function(D_series, row, col, start_date, end_date) {
     ))
   }
 
-  # Replicate each dummy value across 'row' rows
-  # Output: matrix [row x col] where every row is identical (= XXX_vec)
   output_matrix <- matrix(rep(XXX_vec, each = row), nrow = row, ncol = col, byrow = FALSE)
 
   return(output_matrix)
 }
 
 # =============================================================================
-# SECTION 3  — Mean Model Estimation (AR order selection via BIC)
+# SECTION 2  — Mean Model Estimation (AR order selection via BIC)
 # =============================================================================
 
 mean_fit <- function(returns, max_ar_order = 5, lb_lags = 10, alpha = 0.05,
                      force_ar_order = NULL, verbose = TRUE) {
-  # Ensure input is an xts object
   if (!"xts" %in% class(returns)) {
     stop("Input data must be an xts object.")
   }
-
-  # Extract values and date index
   return_values <- as.numeric(coredata(returns))
   date_index <- index(returns)
   n <- length(return_values)
-
-  # Remove any NAs for model estimation (keep date index alignment)
   valid_idx <- !is.na(return_values)
   rv_clean <- return_values[valid_idx]
 
-  # Ljung-Box test on raw returns 
   lb_raw <- Box.test(rv_clean, lag = lb_lags, type = "Ljung-Box")
 
   if (verbose) {
@@ -645,9 +550,7 @@ mean_fit <- function(returns, max_ar_order = 5, lb_lags = 10, alpha = 0.05,
     cat("  p-value:  ", round(lb_raw$p.value, 4), "\n")
   }
 
-  # Decide model based on LB test (or force)
   if (!is.null(force_ar_order) && force_ar_order > 0) {
-    # Forced AR order — skip LB test decision
     if (verbose) cat("  -> FORCED AR(", force_ar_order, ") by user.\n")
     best_order <- force_ar_order
     ar_fit_try <- tryCatch(
@@ -669,7 +572,6 @@ mean_fit <- function(returns, max_ar_order = 5, lb_lags = 10, alpha = 0.05,
     p_value <- 2 * (1 - pnorm(abs(t_stat)))
 
   } else if (lb_raw$p.value > alpha) {
-    # No autocorrelation → use constant mean (original approach)
     if (verbose) {
       cat("  -> No significant autocorrelation. Using constant mean.\n")
     }
@@ -677,7 +579,7 @@ mean_fit <- function(returns, max_ar_order = 5, lb_lags = 10, alpha = 0.05,
     model_type <- "constant"
     ar_order <- 0
     mu_hat <- mean(rv_clean)
-    residuals_est <- return_values - mu_hat  # Keep NAs in place
+    residuals_est <- return_values - mu_hat 
 
     # Stats for constant mean
     std_error <- sd(rv_clean) / sqrt(length(rv_clean))
@@ -686,15 +588,11 @@ mean_fit <- function(returns, max_ar_order = 5, lb_lags = 10, alpha = 0.05,
     ar_coefs <- NULL
 
   } else {
-    # Autocorrelation detected → fit AR(p) with BIC selection
     if (verbose) {
       cat("  -> Significant autocorrelation detected. Fitting AR(p) with BIC selection.\n")
     }
-
-    # Use ar() with AIC=FALSE to use BIC-like selection (order.max constraint)
-    # For rigorous BIC, manually compare AR(0) to AR(max_ar_order)
     bic_vals <- rep(NA, max_ar_order + 1)
-    bic_vals[1] <- BIC(lm(rv_clean ~ 1))  # AR(0) = constant
+    bic_vals[1] <- BIC(lm(rv_clean ~ 1)) 
 
     ar_fits <- list()
     for (p in 1:max_ar_order) {
@@ -708,7 +606,7 @@ mean_fit <- function(returns, max_ar_order = 5, lb_lags = 10, alpha = 0.05,
       }
     }
 
-    best_order <- which.min(bic_vals) - 1  # -1 because index 1 = AR(0)
+    best_order <- which.min(bic_vals) - 1 
 
     if (verbose) {
       cat("  BIC values: AR(0):", round(bic_vals[1], 2))
@@ -721,7 +619,6 @@ mean_fit <- function(returns, max_ar_order = 5, lb_lags = 10, alpha = 0.05,
     }
 
     if (best_order == 0) {
-      # BIC prefers constant despite LB detecting autocorrelation (rare but possible)
       model_type <- "constant"
       ar_order <- 0
       mu_hat <- mean(rv_clean)
@@ -731,7 +628,6 @@ mean_fit <- function(returns, max_ar_order = 5, lb_lags = 10, alpha = 0.05,
       p_value <- 2 * (1 - pt(abs(t_stat), df = length(rv_clean) - 1))
       ar_coefs <- NULL
     } else {
-      # Use selected AR(p)
       model_type <- paste0("AR(", best_order, ")")
       ar_order <- best_order
       ar_fit <- ar_fits[[best_order]]
@@ -739,10 +635,8 @@ mean_fit <- function(returns, max_ar_order = 5, lb_lags = 10, alpha = 0.05,
       mu_hat <- as.numeric(ar_fit$coef["intercept"])
       ar_coefs <- ar_fit$coef[1:best_order]
 
-      # Residuals: arima returns residuals with NAs at start for first p obs
       resid_clean <- as.numeric(residuals(ar_fit))
 
-      # Reconstruct full-length residuals respecting original NA positions
       residuals_est <- rep(NA, n)
       residuals_est[valid_idx] <- resid_clean
 
@@ -753,7 +647,6 @@ mean_fit <- function(returns, max_ar_order = 5, lb_lags = 10, alpha = 0.05,
     }
   }
 
-  # Ljung-Box test on residuals (sanity check)
   lb_resid <- Box.test(na.omit(residuals_est), lag = lb_lags, type = "Ljung-Box")
 
   if (verbose) {
@@ -792,8 +685,6 @@ mean_fit <- function(returns, max_ar_order = 5, lb_lags = 10, alpha = 0.05,
     lb_test_residuals = lb_resid
   ))
 }
-
-# FLEXIBLE GARCH-MIDAS LIKELIHOOD
 
 GM_LL_flex <- function(param, daily_ret, mv_m, mv_m_m = NULL, K,
                        distribution = "norm", lag_fun = "Beta",
@@ -861,8 +752,6 @@ GM_LL_flex <- function(param, daily_ret, mv_m, mv_m_m = NULL, K,
   return(ll)
 }
 
-# Companion 1: total conditional volatility series  →  sqrt(g_it * tau_d)
-
 GM_cond_vol_flex <- function(param, daily_ret, mv_m, mv_m_m = NULL, K,
                              lag_fun = "Beta", dummy = NULL, has_X = TRUE) {
 
@@ -905,8 +794,6 @@ GM_cond_vol_flex <- function(param, daily_ret, mv_m, mv_m_m = NULL, K,
 
   return(as.xts(sqrt(g_it * tau_d), index(daily_ret)))
 }
-
-# Companion 2: long-run volatility series only  →  sqrt(tau_d)
 
 GM_long_run_vol_flex <- function(param, daily_ret, mv_m, mv_m_m = NULL, K,
                                  lag_fun = "Beta", dummy = NULL, has_X = TRUE) {
@@ -967,73 +854,63 @@ ugmfit_flex <- function(daily_ret, mv_m, mv_m_2 = NULL, K,
               has_X, n_breaks, n_params))
 
   # --- Initial-value grid ---
-  # NOTE: theta ranges are narrower because RV is in percentage scale (scaled *10000)
-  # With RV_pct ~ 372 for BTC, theta_RV ~ 0.01 gives theta*RV ~ 3.7 (sensible log-variance contribution)
   set.seed(seed)
   begin_val <- matrix(NA, nrow = R, ncol = n_params)
   colnames(begin_val) <- pnames
 
-  # mu range: BTC mean ~ 0.15%, MSCI ~ 0.03% (percentage returns)
-  begin_val[, 1] <- runif(R, -0.3, 0.5)     # mu (mean return)
-  begin_val[, 2] <- runif(R, 0.001, 0.09)   # alpha
-  begin_val[, 3] <- runif(R, 0.5, 0.85)     # beta
-  begin_val[, 4] <- runif(R, -5, 5)          # m (log-variance intercept)
-  begin_val[, 5] <- runif(R, -0.1, 0.1)     # theta_RV (narrow: RV now in 100s)
-  begin_val[, 6] <- runif(R, 1.05, 8.0)     # w2_RV
+  begin_val[, 1] <- runif(R, -0.3, 0.5)    
+  begin_val[, 2] <- runif(R, 0.001, 0.09)   
+  begin_val[, 3] <- runif(R, 0.5, 0.85)     
+  begin_val[, 4] <- runif(R, -5, 5)         
+  begin_val[, 5] <- runif(R, -0.1, 0.1)    
+  begin_val[, 6] <- runif(R, 1.05, 8.0)    
 
   if (has_X) {
-    begin_val[, 7] <- runif(R, -5, 5)       # theta_X (GEPU diff unchanged scale)
-    begin_val[, 8] <- runif(R, 1.05, 8.0)   # w2_X
+    begin_val[, 7] <- runif(R, -5, 5)     
+    begin_val[, 8] <- runif(R, 1.05, 8.0)   
   }
 
   base_idx <- if (has_X) 8L else 6L
   if (n_breaks > 0) {
     for (j in 1:n_breaks) {
-      begin_val[, base_idx + j] <- runif(R, -0.1, 0.1)   # theta_RV_break (same narrow range)
+      begin_val[, base_idx + j] <- runif(R, -0.1, 0.1)  
     }
     if (has_X) {
       for (j in 1:n_breaks) {
-        begin_val[, base_idx + n_breaks + j] <- runif(R, -5, 5)   # theta_X_break
+        begin_val[, base_idx + n_breaks + j] <- runif(R, -5, 5)   
       }
     }
   }
 
-  # --- LL arguments (used both for grid search and maxLik) ---
   r_t_est <- zoo::coredata(daily_ret)
   ll_args <- list(daily_ret = r_t_est, mv_m = mv_m, K = K,
                   distribution = "norm", lag_fun = lag_fun,
                   dummy = dummy, has_X = has_X)
   if (has_X) ll_args$mv_m_m <- mv_m_2
 
-  # --- Rank grid starting values ---
   which_row <- sapply(1:R, function(i) {
     sum(do.call(GM_LL_flex, c(list(param = begin_val[i, ]), ll_args)))
   })
   N_start <- max(3L, min(10L, 2L + n_breaks * 2L + as.integer(has_X)))
   top_idx <- order(which_row, decreasing = TRUE)[1:min(N_start, R)]
 
-  # --- Inequality constraints: dynamically sized ---
   ui_list <- list()
   ci_vec  <- c()
 
-  # alpha > 0 (param[2])
   row1 <- rep(0, n_params); row1[2] <- 1
   ui_list[[length(ui_list) + 1]] <- row1; ci_vec <- c(ci_vec, -1e-3)
-  # beta > 0 (param[3])
   row2 <- rep(0, n_params); row2[3] <- 1
   ui_list[[length(ui_list) + 1]] <- row2; ci_vec <- c(ci_vec, -1e-3)
-  # alpha + beta < 1
   row3 <- rep(0, n_params); row3[2] <- -1; row3[3] <- -1
   ui_list[[length(ui_list) + 1]] <- row3; ci_vec <- c(ci_vec, 0.999)
-  # w2_RV > 1 (param[6])
   row4 <- rep(0, n_params); row4[6] <- 1
   ui_list[[length(ui_list) + 1]] <- row4; ci_vec <- c(ci_vec, -1.001)
-  # w2_X > 1 if applicable (param[8])
+  
   if (has_X) {
     row5 <- rep(0, n_params); row5[8] <- 1
     ui_list[[length(ui_list) + 1]] <- row5; ci_vec <- c(ci_vec, -1.001)
   }
-  # w2_RV < 30 (param[6])
+
   row_ub1 <- rep(0, n_params); row_ub1[6] <- -1
   ui_list[[length(ui_list) + 1]] <- row_ub1; ci_vec <- c(ci_vec, 30)
   if (has_X) {
@@ -1042,18 +919,17 @@ ugmfit_flex <- function(daily_ret, mv_m, mv_m_2 = NULL, K,
   }
   ui <- do.call(rbind, ui_list)
 
-  # --- Multi-start NM -> BFGS estimation ---
   neg_ll_pen <- function(p) {
     ll_val <- sum(do.call(GM_LL_flex, c(list(param = p), ll_args)))
     if (!is.finite(ll_val)) return(1e10)
     pen <- 0
-    if (p[2] < 1e-4) pen <- pen + 1e6 * (1e-4 - p[2])^2   # alpha
-    if (p[3] < 1e-4) pen <- pen + 1e6 * (1e-4 - p[3])^2   # beta
+    if (p[2] < 1e-4) pen <- pen + 1e6 * (1e-4 - p[2])^2  
+    if (p[3] < 1e-4) pen <- pen + 1e6 * (1e-4 - p[3])^2  
     if (p[2] + p[3] > 0.999) pen <- pen + 1e6 * (p[2]+p[3]-0.999)^2
-    if (p[6] < 1.001) pen <- pen + 1e6 * (1.001 - p[6])^2 # w2_RV
+    if (p[6] < 1.001) pen <- pen + 1e6 * (1.001 - p[6])^2
     if (p[6] > 30)    pen <- pen + 1e6 * (p[6] - 30)^2
     if (has_X && length(p) >= 8) {
-      if (p[8] < 1.001) pen <- pen + 1e6 * (1.001 - p[8])^2 # w2_X
+      if (p[8] < 1.001) pen <- pen + 1e6 * (1.001 - p[8])^2
       if (p[8] > 30)    pen <- pen + 1e6 * (p[8] - 30)^2
     }
     -(ll_val - pen)
@@ -1085,8 +961,7 @@ ugmfit_flex <- function(daily_ret, mv_m, mv_m_2 = NULL, K,
 
   se_vals <- safe_QMLE_se(est, ll_func = GM_LL_flex, ll_args = ll_args,
                           daily_ret = r_t_est)
-
-  # SE sanity: |t| > 200 indicates Hessian artifact at boundary
+                  
   t_check <- abs(est_coef / se_vals)
   suspect <- which(!is.na(t_check) & is.finite(t_check) & t_check > 200)
   if (length(suspect) > 0) {
@@ -1129,12 +1004,8 @@ ugmfit_flex <- function(daily_ret, mv_m, mv_m_2 = NULL, K,
        est_obj      = est)
 }
 
+# DCC_MIDAS ESTIMATION FUNCTION
 
-# =============================================================================
-# 3. DCC_MIDAS ESTIMATION FUNCTION
-# =============================================================================
-
-# set up the log likelihood function
 dccmidas_ll <- function (param, res, lag_fun = "Beta", N_c, K_c, dcc_mv = NULL)
 
 {
@@ -1147,8 +1018,8 @@ dccmidas_ll <- function (param, res, lag_fun = "Beta", N_c, K_c, dcc_mv = NULL)
   theta_m <- param[6]
   w1_m <- ifelse(lag_fun == "Beta", 1, 0)
   w2_m <- param[7]
-  Num_col <- dim(res)[1] # Number of variables (rows in res).
-  TT <- dim(res)[3] # Number of time steps
+  Num_col <- dim(res)[1]
+  TT <- dim(res)[3] 
 
 
   X_t <- array(0, dim = c(Num_col, Num_col, TT))
@@ -1156,9 +1027,9 @@ dccmidas_ll <- function (param, res, lag_fun = "Beta", N_c, K_c, dcc_mv = NULL)
     X_t[, , tt] <- matrix(dcc_mv[tt], nrow = Num_col, ncol = Num_col)
   }
 
-  C_t <- array(0, dim = c(Num_col, Num_col, TT))      # realized correlation
-  V_t <- array(0, dim = c(Num_col, Num_col, TT))      # Variance matrix for standardization.
-  Prod_eps_t <- array(0, dim = c(Num_col, Num_col, TT)) # Cross-products of residuals.
+  C_t <- array(0, dim = c(Num_col, Num_col, TT))     
+  V_t <- array(0, dim = c(Num_col, Num_col, TT))    
+  Prod_eps_t <- array(0, dim = c(Num_col, Num_col, TT)) 
 
   S_init <- stats::cov(t(apply(res, 3L, c)))
   Q_t <- array(S_init, dim = c(Num_col, Num_col, TT))
@@ -1171,7 +1042,7 @@ dccmidas_ll <- function (param, res, lag_fun = "Beta", N_c, K_c, dcc_mv = NULL)
 
   #Calculate Realized Correlation
   for (tt in (N_c + 1):TT) {
-    V_t[, , tt] <- rowSums(res[, 1, tt:(tt - N_c)] * (res[, 1, tt:(tt - N_c)])) * diag(Num_col) #Diagonal matrix with variance (off-diagonal is zero)
+    V_t[, , tt] <- rowSums(res[, 1, tt:(tt - N_c)] * (res[, 1, tt:(tt - N_c)])) * diag(Num_col) 
     Prod_eps_t[, , tt] <- res[, , tt:(tt - N_c)] %*% t(res[, , tt:(tt - N_c)])
     V_t_0.5 <- Inv(sqrt(V_t[, , tt]))
     C_t[, , tt] <- V_t_0.5 %*% Prod_eps_t[, , tt] %*% V_t_0.5
@@ -1183,7 +1054,7 @@ dccmidas_ll <- function (param, res, lag_fun = "Beta", N_c, K_c, dcc_mv = NULL)
   betas_m <- c(rev(weight_fun_m(1:(K_c + 1), (K_c + 1), w1_m, w2_m))[2:(K_c +  1)], 0) #GEPU
 
   R_t_bar <- array(1, dim = c(Num_col, Num_col, TT))
-  Z_t_bar <- array(1, dim = c(Num_col, Num_col, TT)) # New
+  Z_t_bar <- array(1, dim = c(Num_col, Num_col, TT)) 
   matrix_id <- matrix(1:Num_col^2, ncol = Num_col)
   matrix_id_2 <- which(matrix_id == 1:Num_col^2, arr.ind = TRUE)
 
@@ -1223,7 +1094,7 @@ dccmidas_ll <- function (param, res, lag_fun = "Beta", N_c, K_c, dcc_mv = NULL)
   return(ll)
 }
 
-# --- 2a. Log-likelihood với structural breaks ---
+# --- Log-likelihood với structural breaks ---
 dccmidas_ll_sb <- function (param, res, lag_fun = "Beta", N_c, K_c, dcc_mv = NULL, dummy_dcc = NULL)
 {
   a <- param[1]
@@ -1231,13 +1102,12 @@ dccmidas_ll_sb <- function (param, res, lag_fun = "Beta", N_c, K_c, dcc_mv = NUL
   w1 <- ifelse(lag_fun == "Beta", 1, 0)
   w2 <- param[3]
   m <- param[4]
-  theta <- param[5]        # θ_RC (base)
-  theta_m <- param[6]      # θ_X (base)
+  theta <- param[5]       
+  theta_m <- param[6]     
   w1_m <- ifelse(lag_fun == "Beta", 1, 0)
   w2_m <- param[7]
   n_breaks <- if (is.null(dummy_dcc)) 0L else length(dummy_dcc)
 
-  # Break params (positions 8 onward)
   if (n_breaks > 0) {
     theta_b   <- param[(7 + 1):(7 + n_breaks)]
     theta_m_b <- param[(7 + n_breaks + 1):(7 + 2*n_breaks)]
@@ -1327,7 +1197,7 @@ dccmidas_ll_sb <- function (param, res, lag_fun = "Beta", N_c, K_c, dcc_mv = NUL
 }
 
 
-# --- 2b. Matrix extraction với structural breaks ---
+# --- Matrix extraction với structural breaks ---
 dccmidas_mat_est_sb <- function (param, res, Dt, lag_fun = "Beta", N_c, K_c, dcc_mv = NULL, dummy_dcc = NULL)
 {
   a <- param[1]; b <- param[2]
@@ -1336,7 +1206,6 @@ dccmidas_mat_est_sb <- function (param, res, Dt, lag_fun = "Beta", N_c, K_c, dcc
   w1_m <- ifelse(lag_fun == "Beta", 1, 0); w2_m <- param[7]
   n_breaks <- if (is.null(dummy_dcc)) 0L else length(dummy_dcc)
 
-  # Break params (positions 8 onward)
   if (n_breaks > 0) {
     theta_b   <- param[(7 + 1):(7 + n_breaks)]
     theta_m_b <- param[(7 + n_breaks + 1):(7 + 2*n_breaks)]
@@ -1430,32 +1299,29 @@ dccmidas_mat_est_modified <- function (param, res, Dt, lag_fun = "Beta", N_c, K_
   theta_m <- param[6]
   w1_m <- ifelse(lag_fun == "Beta", 1, 0)
   w2_m <- param[7]
-  Num_col <- dim(res)[1] # Number of variables (rows in res).
-  TT <- dim(res)[3] # Number of time steps
-
-
-  # Initialize matrices
+  Num_col <- dim(res)[1] 
+  TT <- dim(res)[3] 
 
   X_t <- array(0, dim = c(Num_col, Num_col, TT))
   for (tt in 1:TT) {
     X_t[, , tt] <- matrix(dcc_mv[tt], nrow = Num_col, ncol = Num_col)
-  } # matrix of macroeconimic variable in similary format with C_t
+  } 
 
 
-  C_t <- array(0, dim = c(Num_col, Num_col, TT))  # Normalized covariance matrix
-  V_t <- array(0, dim = c(Num_col, Num_col, TT))  # Rolling variance matrix
+  C_t <- array(0, dim = c(Num_col, Num_col, TT))  
+  V_t <- array(0, dim = c(Num_col, Num_col, TT))  
 
-  Prod_eps_t <- array(0, dim = c(Num_col, Num_col, TT))  # Product of residuals
+  Prod_eps_t <- array(0, dim = c(Num_col, Num_col, TT))  
   S_init <- stats::cov(t(apply(res, 3L, c)))
   Q_t <- array(S_init, dim = c(Num_col, Num_col, TT))
-  R_t <- array(diag(rep(1, Num_col)), dim = c(Num_col, Num_col, TT))  # Dynamic correlation matrix
+  R_t <- array(diag(rep(1, Num_col)), dim = c(Num_col, Num_col, TT)) 
 
-  log_det_R_t <- rep(0, TT)  # Log determinants
-  R_t_solved <- array(1, dim = c(Num_col, Num_col, TT))  # Inverted correlation matrices
-  Eps_t_cross_prod <- rep(0, TT)  # Residual cross-products
-  Eps_t_R_t_Eps_t <- rep(0, TT)  # Quadratic form of residuals
-  S <- stats::cov(t(apply(res, 3L, c)))  # Static covariance matrix
-  H_t <- array(S, dim = c(Num_col, Num_col, TT))  # Conditional covariance matrix
+  log_det_R_t <- rep(0, TT)  
+  R_t_solved <- array(1, dim = c(Num_col, Num_col, TT))  
+  Eps_t_cross_prod <- rep(0, TT)  
+  Eps_t_R_t_Eps_t <- rep(0, TT)  
+  S <- stats::cov(t(apply(res, 3L, c)))  
+  H_t <- array(S, dim = c(Num_col, Num_col, TT)) 
 
   # Compute rolling covariance and normalize
   for (tt in (N_c + 1):TT) {
@@ -1465,13 +1331,12 @@ dccmidas_mat_est_modified <- function (param, res, Dt, lag_fun = "Beta", N_c, K_
     C_t[, , tt] <- V_t_0.5 %*% Prod_eps_t[, , tt] %*% V_t_0.5
   }
 
-  # Determine lag weighting function
   weight_fun <- ifelse(lag_fun == "Beta", beta_function, exp_almon)
   betas <- c(rev(weight_fun(1:(K_c + 1), (K_c + 1), w1, w2))[2:(K_c + 1)], 0)
   weight_fun_m <- ifelse(lag_fun == "Beta", rumidas::beta_function, rumidas::exp_almon)
   betas_m <- c(rev(weight_fun_m(1:(K_c + 1), (K_c + 1), w1_m, w2_m))[2:(K_c +  1)], 0)
-  # Smooth correlation matrix using weighted sums
-  Z_t_bar <- array(1, dim = c(Num_col, Num_col, TT)) # New
+
+  Z_t_bar <- array(1, dim = c(Num_col, Num_col, TT)) 
   R_t_bar <- array(1, dim = c(Num_col, Num_col, TT))
   matrix_id <- matrix(1:Num_col^2, ncol = Num_col)
   matrix_id_2 <- which(matrix_id == 1:Num_col^2, arr.ind = TRUE)
@@ -1498,20 +1363,18 @@ dccmidas_mat_est_modified <- function (param, res, Dt, lag_fun = "Beta", N_c, K_
   for (tt in (burn_in + 1):TT) {
     Q_t[, , tt] <- (1 - a - b) * R_t_bar[, , tt] + a * res[, , tt - 1] %*% t(res[, , tt - 1]) + b * Q_t[, , tt - 1]
     Q_t_star <- Inv(sqrt(diag(diag(Q_t[, , tt]))))
-    R_t[, , tt] <- Q_t_star %*% Q_t[, , tt] %*% Q_t_star  # Normalize to get correlation matrix
-    H_t[, , tt] <- Dt[, , tt] %*% R_t[, , tt] %*% Dt[, , tt]  # Compute conditional covariance
+    R_t[, , tt] <- Q_t_star %*% Q_t[, , tt] %*% Q_t_star 
+    H_t[, , tt] <- Dt[, , tt] %*% R_t[, , tt] %*% Dt[, , tt] 
   }
 
-  # Return results
   results <- list(H_t = H_t, R_t = R_t, R_t_bar = R_t_bar, C_t = C_t, Z_t = Z_t_bar, X_t = X_t, Q_t = Q_t, D_t = Dt, res = res, C_component = C_component, X_component = X_component)
   return(results)
 }
 
-# ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  PART 3: RC-ONLY DCC-MIDAS FUNCTIONS (NO GEPU)                            ║                   ║
-# ╚═══════════════════════════════════════════════════════════════════════════╝
 
-# ---------- 3A. Log-likelihood: RC only, WITHOUT SB ----------
+#  RC-ONLY DCC-MIDAS FUNCTIONS (NO GEPU)                                             
+
+# ---------- Log-likelihood: RC only, WITHOUT SB ----------
 
 dccmidas_ll_rc_no_sb <- function(param, res, lag_fun = "Beta", N_c, K_c) {
   a <- param[1]; b <- param[2]
@@ -1545,13 +1408,11 @@ dccmidas_ll_rc_no_sb <- function(param, res, lag_fun = "Beta", N_c, K_c) {
   matrix_id <- matrix(1:Num_col^2, ncol = Num_col)
   matrix_id_2 <- which(matrix_id == 1:Num_col^2, arr.ind = TRUE)
 
-  # C_t undefined for 1:N_c — set NA so rolling sums propagate NAs naturally
   C_t[, , 1:N_c] <- NA
 
   for (i in 1:nrow(matrix_id_2)) {
     C_component <- suppressWarnings(roll::roll_sum(
       C_t[matrix_id_2[i,1], matrix_id_2[i,2], ], c(K_c+1), weights = betas))
-    # Eq. (12): z = m + θ_RC * Σφ_k * RC  (NO GEPU)
     Z_t_bar[matrix_id_2[i,1], matrix_id_2[i,2], ] <- m + theta * C_component
     R_t_bar[matrix_id_2[i,1], matrix_id_2[i,2], ] <-
       (exp(2 * Z_t_bar[matrix_id_2[i,1], matrix_id_2[i,2], ]) - 1) /
@@ -1577,7 +1438,7 @@ dccmidas_ll_rc_no_sb <- function(param, res, lag_fun = "Beta", N_c, K_c) {
   return(-(log_det_R_t + Eps_t_R_t_Eps_t))
 }
 
-# ---------- 3B. Matrix extraction: RC only, WITHOUT SB ----------
+# ---------- Matrix extraction: RC only, WITHOUT SB ----------
 dccmidas_mat_est_rc_no_sb <- function(param, res, Dt, lag_fun = "Beta", N_c, K_c) {
   a <- param[1]; b <- param[2]
   w1 <- ifelse(lag_fun == "Beta", 1, 0); w2 <- param[3]
@@ -1636,25 +1497,21 @@ dccmidas_mat_est_rc_no_sb <- function(param, res, Dt, lag_fun = "Beta", N_c, K_c
   return(list(H_t=H_t, R_t=R_t, R_t_bar=R_t_bar, C_t=C_t, Z_t=Z_t_bar, Q_t=Q_t, D_t=Dt, res=res))
 }
 
-# ---------- 3C. Log-likelihood: RC only, WITH SB ----------
+# ---------- Log-likelihood: RC only, WITH SB ----------
 
 dccmidas_ll_rc_sb <- function(param, res, lag_fun = "Beta", N_c, K_c, dummy_dcc = NULL) {
 
   n_breaks <- if (is.null(dummy_dcc)) 0L else length(dummy_dcc)
-
-  # --- Unpack params (RC-only: NO theta_m, NO w2_m) ---
   a <- param[1]; b <- param[2]
   w1 <- ifelse(lag_fun == "Beta", 1, 0); w2 <- param[3]
   m <- param[4]; theta <- param[5]
 
-  # Break params start at position 6 (NOT 8 like the GEPU version)
   if (n_breaks > 0) {
-    theta_b <- param[(5 + 1):(5 + n_breaks)]    # positions 6..(5+n_breaks)
+    theta_b <- param[(5 + 1):(5 + n_breaks)]   
   }
 
   Num_col <- dim(res)[1]; TT <- dim(res)[3]
 
-  # Build SB effect on theta only (no theta_m for RC-only)
   theta_sb <- 0
   if (n_breaks > 0) {
     for (j in 1:n_breaks) theta_sb <- theta_sb + theta_b[j] * dummy_dcc[[j]]
@@ -1685,13 +1542,11 @@ dccmidas_ll_rc_sb <- function(param, res, lag_fun = "Beta", N_c, K_c, dummy_dcc 
   matrix_id <- matrix(1:Num_col^2, ncol = Num_col)
   matrix_id_2 <- which(matrix_id == 1:Num_col^2, arr.ind = TRUE)
 
-  # C_t undefined for 1:N_c — set NA so rolling sums propagate NAs naturally
   C_t[, , 1:N_c] <- NA
 
   for (i in 1:nrow(matrix_id_2)) {
     C_component <- suppressWarnings(roll::roll_sum(
       C_t[matrix_id_2[i,1], matrix_id_2[i,2], ], c(K_c+1), weights = betas))
-    # RC-only with breaks: z = m + (theta + theta_sb) * C_component
     Z_t_bar[matrix_id_2[i,1], matrix_id_2[i,2], ] <- m + (theta + theta_sb) * C_component
     R_t_bar[matrix_id_2[i,1], matrix_id_2[i,2], ] <-
       (exp(2 * Z_t_bar[matrix_id_2[i,1], matrix_id_2[i,2], ]) - 1) /
@@ -1717,12 +1572,11 @@ dccmidas_ll_rc_sb <- function(param, res, lag_fun = "Beta", N_c, K_c, dummy_dcc 
   return(-(log_det_R_t + Eps_t_R_t_Eps_t))
 }
 
-# ---------- 3D. Matrix extraction: RC only, WITH SB ----------
+# ---------- Matrix extraction: RC only, WITH SB ----------
 dccmidas_mat_est_rc_sb <- function(param, res, Dt, lag_fun = "Beta", N_c, K_c, dummy_dcc = NULL) {
 
   n_breaks <- if (is.null(dummy_dcc)) 0L else length(dummy_dcc)
 
-  # --- Unpack params (RC-only: NO theta_m, NO w2_m) ---
   a <- param[1]; b <- param[2]
   w1 <- ifelse(lag_fun == "Beta", 1, 0); w2 <- param[3]
   m <- param[4]; theta <- param[5]
@@ -1762,13 +1616,11 @@ dccmidas_mat_est_rc_sb <- function(param, res, Dt, lag_fun = "Beta", N_c, K_c, d
   matrix_id <- matrix(1:Num_col^2, ncol = Num_col)
   matrix_id_2 <- which(matrix_id == 1:Num_col^2, arr.ind = TRUE)
 
-  # C_t undefined for 1:N_c — set NA so rolling sums propagate NAs naturally
   C_t[, , 1:N_c] <- NA
 
   for (i in 1:nrow(matrix_id_2)) {
     C_component <- suppressWarnings(roll::roll_sum(
       C_t[matrix_id_2[i,1], matrix_id_2[i,2], ], c(K_c+1), weights = betas))
-    # RC-only with breaks
     Z_t_bar[matrix_id_2[i,1], matrix_id_2[i,2], ] <- m + (theta + theta_sb) * C_component
     R_t_bar[matrix_id_2[i,1], matrix_id_2[i,2], ] <-
       (exp(2 * Z_t_bar[matrix_id_2[i,1], matrix_id_2[i,2], ]) - 1) /
@@ -1800,7 +1652,7 @@ dcc_fit_modify <- function (r_t,
                             dummy = NULL)
 
 {
-  cond_r_t <- class(r_t)    # Check if r_t is list of assets returns series
+  cond_r_t <- class(r_t)   
   if (cond_r_t != "list") {
     stop(cat("#Warning:\n Parameter 'r_t' must be a list object. Please provide it in the correct form \n"))
   }
@@ -1867,7 +1719,7 @@ dcc_fit_modify <- function (r_t,
 
         est_details[[i]] <- u_est$rob_coef_mat   # The robust coefficient matrix (rob_coef_mat) for asset
         likelihood_at_max[[i]] <- u_est$loglik   # The log-likelihood value at the estimated parameters' maximum
-        sd_m[, i] <- u_est$est_vol_in_s          # Save the in-sample estimated volatilities in sd_m[, i].
+        sd_m[, i] <- u_est$est_vol_in_s          
         sd_m_lr[, i] <- u_est$est_lr_in_s
         garch_logL[[i]] <- u_est$inf_criteria
       }
@@ -2013,12 +1865,9 @@ dcc_fit_modify <- function (r_t,
   print.dccmidas(fin_res)
 }
 
-# =============================================================================
-# 4. FORMATING THE RESULT FUNCTION
-# =============================================================================
+# FORMATING THE RESULT FUNCTION
 
 to_df_multiple <- function(...) {
-  # Capture argument names
   matrix_names <- as.character(match.call())[-1]
   matrices <- list(...)
 
@@ -2026,18 +1875,15 @@ to_df_multiple <- function(...) {
     dims <- dim(mat)
 
     if (is.null(dims)) {
-      # Handle vectors
       return(data.frame(setNames(list(mat), mat_name)))
     }
 
     else if (length(dims) == 2) {
-      # Handle 2D matrix
       temp_list <- setNames(as.data.frame(mat), paste0(mat_name, "_", seq_len(ncol(mat))))
       return(temp_list)
     }
 
     else if (length(dims) == 3) {
-      # Handle 3D matrix
       temp_list <- list()
       for (i in seq_len(dims[1])) {
         for (j in seq_len(dims[2])) {
@@ -2060,30 +1906,23 @@ set_date_index <- function(df, start_date=start_date, end_date=end_date) {
   library(dplyr)
   library(tibble)
 
-  # Convert input dates to Date format
   start_date <- as.Date(start_date)
   end_date <- as.Date(end_date)
 
-  # Create a date sequence
   date_sequence <- seq(start_date, end_date, by = "day")
 
-  # Check if the number of rows in df matches the length of the date sequence
   if (nrow(df) != length(date_sequence)) {
     stop("Error: The number of rows in the data frame does not match the length of the date sequence.")
   }
 
-  # Assign date sequence to the data frame
   df$Date <- date_sequence
 
-  # Convert Date column to row names
   df <- df %>% column_to_rownames(var = "Date")
 
   return(df)
 }
 
-# ============================================================================
-# CONFIG — Change INDEX_TICKER here to run different pairs
-# ============================================================================
+# CONFIG 
 
 INDEX_TICKER <- "msci_world"    # <<<<<<< CHANGE THIS for each pair global economic policy uncertainty
 
@@ -2095,10 +1934,9 @@ start_date_is <- as.Date("2016-10-01")
 end_date_is   <- as.Date("2025-11-30")
 
 # ============================================================================
-# 5. LOAD DATA FUNCTION
+#  LOAD DATA FUNCTION
 # ============================================================================
 load_data <- function(start_date, end_date, index_ticker) {
-  # --- Daily data ---
   data <- read_excel("D:/Thesis/Data/BTC-INDICES/Aligned_Trading_Dates_All_Assets.xlsx")
   data <- data[order(as.Date(data$Date)), ]
   dates <- as.Date(data$Date)
@@ -2114,7 +1952,6 @@ load_data <- function(start_date, end_date, index_ticker) {
   db_m <- merge.xts(btc_xts, idx_xts)
   db_m_filtered <- window(db_m, start = start_date, end = end_date)
 
-  # --- Monthly GEPU ---
   data_gepu <- read_excel("D:/Thesis/Data/BTC-INDICES/Data_Monthly_GEPU.xlsx", sheet = "GEPU")
   data_gepu <- data_gepu[order(as.Date(data_gepu$Date)), ]
   GEPU_xts <- xts(as.numeric(data_gepu$GEPU_ppp),
@@ -2131,9 +1968,6 @@ load_data <- function(start_date, end_date, index_ticker) {
   data_rv <- data_rv[order(as.Date(data_rv$Date)), ]
   dates_rv <- as.Date(data_rv$Date)
 
-  # RV in data is computed from decimal returns (sum of r^2).
-  # Since daily returns are scaled by *100 in this code, RV must be scaled
-  # by 100^2 = 10000 to maintain consistency: RV_pct = sum((r*100)^2) = 10000 * sum(r^2)
   RV_scale <- 100^2   # = 10000
   RV_btc_xts <- xts(as.numeric(data_rv$RV_Ln_rt_btc) * RV_scale, order.by = dates_rv)
   RV_idx_xts <- xts(as.numeric(data_rv[[paste0("RV_Ln_rt_", index_ticker)]]) * RV_scale,
@@ -2161,7 +1995,7 @@ load_data <- function(start_date, end_date, index_ticker) {
 
 
 # =============================================================================
-# 6. HEDGING EVALUATION FUNCTION
+# HEDGING EVALUATION FUNCTION
 # =============================================================================
 
 
@@ -2169,19 +2003,16 @@ hedging_performance_analysis <- function(df) {
   if (!exists("df")) {
     stop("Error: The dataframe does not exist.")
   }
-
-  # Step 2: Compute hedge ratios series
+  
   df$hedge_ratio_2 <- df$H_t_1_2 / df$H_t_1_1
   df$hedge_ratio_1 <- df$H_t_1_2 / df$H_t_2_2
 
-  # Step 3: Compute hedged returns series
   df$ret_hedged_2 <- df$resid_2_1 - (df$hedge_ratio_2 * df$resid_1_1)
   df$ret_hedged_1 <- df$resid_1_1 - (df$hedge_ratio_1 * df$resid_2_1)
 
-  # Step 4: Compute variance and holding period return (HPR)
   compute_stats <- function(column_name) {
-    var_value <- var(df[[column_name]], na.rm = TRUE)  # Variance
-    hpr_value <- sum(df[[column_name]], na.rm = TRUE)  # Holding period return
+    var_value <- var(df[[column_name]], na.rm = TRUE) 
+    hpr_value <- sum(df[[column_name]], na.rm = TRUE) 
     return(c(Variance = var_value, Return = hpr_value))
   }
 
@@ -2190,7 +2021,6 @@ hedging_performance_analysis <- function(df) {
   stats_resid_2_1 <- compute_stats("resid_2_1")
   stats_ret_hedged_2 <- compute_stats("ret_hedged_2")
 
-  # Step 5: Create a dataframe for comparison
   comparison_df <- data.frame(
     Metric = c("Variance", "Return"),
     Resid_1_1 = stats_resid_1_1,
@@ -2199,7 +2029,6 @@ hedging_performance_analysis <- function(df) {
     Ret_Hedged_2 = stats_ret_hedged_2
   )
 
-  # Step 6: Hedging performance evaluation
   # Extract variance values
   var_resid_1_1 <- as.numeric(comparison_df[comparison_df$Metric == "Variance", "Resid_1_1"])
   var_ret_hedged_1 <- as.numeric(comparison_df[comparison_df$Metric == "Variance", "Ret_Hedged_1"])
@@ -2231,7 +2060,6 @@ hedging_performance_analysis <- function(df) {
     Ret_Hedged_2 = sharpe_ret_hedged_2
   )
 
-  # Step 7: Return the results
   return(list(
     Comparison_Stats = comparison_df,
     Hedging_Effectiveness = c(HE_1 = HE_1, HE_2 = HE_2),
@@ -2240,13 +2068,7 @@ hedging_performance_analysis <- function(df) {
 }
 
 # ============================================================================
-# Build (eps_t, D_t) array for DCC stage from a pair of GARCH-MIDAS results.
-# Each DCC variant must use ε_t standardized by its MATCHED first-stage GARCH:
-#   Table 9  (RC, no SB)        ← garch_rv_no_sb
-#   Table 10 (RC, SB)           ← garch_rv_sb
-#   Table 11 (RC+GEPU, no SB)   ← garch_rvx_no_sb
-#   Table 12 (RC+GEPU, SB)      ← garch_rvx_sb
-# ============================================================================
+
 build_eps_Dt <- function(sd_btc, sd_idx, db) {
   TT <- nrow(db)
   D_t   <- array(0, dim = c(2, 2, TT))
@@ -2263,20 +2085,6 @@ build_eps_Dt <- function(sd_btc, sd_idx, db) {
   list(eps_t = eps_t, D_t = D_t, TT = TT)
 }
 
-
-# ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  PART 4: MODIFIED SECTION B — ALL 12 TABLES                               ║
-# ╚═══════════════════════════════════════════════════════════════════════════╝
-# Helper function to estimate DCC and build coef table
-# (reusable across all DCC variants)
-
-# ============================================================================
-# FLEX DCC ESTIMATION WRAPPER
-# Handles 4 cases via (has_X, n_breaks):
-#   has_X=FALSE, n_breaks=0  → Table 9:  RC only, no SB     (5 params)
-#   has_X=FALSE, n_breaks=m  → Table 10: RC only, with SB   (5+m params)
-#   has_X=TRUE,  n_breaks=0  → Table 11: RC+GEPU, no SB     (7 params)
-#   has_X=TRUE,  n_breaks=m  → Table 12: RC+GEPU, with SB   (7+2m params)
 # ============================================================================
 estimate_dcc_flex <- function(ll_fun, mat_fun, eps_t, D_t, TT,
                               N_c, K_c, R_dcc = 1500,
@@ -2302,14 +2110,14 @@ estimate_dcc_flex <- function(ll_fun, mat_fun, eps_t, D_t, TT,
   # --- Initial-value grid ---
   begin_val <- matrix(NA, nrow = R_dcc, ncol = n_p)
   colnames(begin_val) <- pnames
-  begin_val[, 1] <- runif(R_dcc, 0.001, 0.095)   # a
-  begin_val[, 2] <- runif(R_dcc, 0.5, 0.98)       # b (high persistence, realistic for DCC)
-  begin_val[, 3] <- runif(R_dcc, 1.05, 8.0)       # w2_RC
-  begin_val[, 4] <- runif(R_dcc, -3, 3)           # m (Fisher-z intercept)
-  begin_val[, 5] <- runif(R_dcc, -5, 5)           # theta_RC
+  begin_val[, 1] <- runif(R_dcc, 0.001, 0.095) 
+  begin_val[, 2] <- runif(R_dcc, 0.5, 0.98)      
+  begin_val[, 3] <- runif(R_dcc, 1.05, 8.0)       
+  begin_val[, 4] <- runif(R_dcc, -3, 3)          
+  begin_val[, 5] <- runif(R_dcc, -5, 5)        
   if (has_X) {
-    begin_val[, 6] <- runif(R_dcc, -10, 10)       # theta_X
-    begin_val[, 7] <- runif(R_dcc, 1.05, 8.0)     # w2_X
+    begin_val[, 6] <- runif(R_dcc, -10, 10)  
+    begin_val[, 7] <- runif(R_dcc, 1.05, 8.0)  
   }
   base_idx <- if (has_X) 7L else 5L
   if (n_breaks > 0) {
@@ -2331,28 +2139,23 @@ estimate_dcc_flex <- function(ll_fun, mat_fun, eps_t, D_t, TT,
     args_i <- c(list(param = begin_val[i, ]), base_args)
     sum(do.call(ll_fun, args_i))
   })
-  # --- Inject warm-start if provided (e.g., from simpler model) ---
+
   if (!is.null(begin_val_override)) {
     n_override <- length(begin_val_override)
     if (n_override <= n_p) {
-      # Pad with zeros for break params if warm-starting from simpler model
       warm_row <- rep(0, n_p)
       warm_row[1:n_override] <- begin_val_override
-      # Replace worst rows with warm-start + perturbations
       n_warm <- min(5L, R_dcc)
       worst_idx <- order(which_row, decreasing = FALSE)[1:n_warm]
       for (wi in seq_along(worst_idx)) {
         perturb <- warm_row * runif(n_p, 0.9, 1.1)
-        # Keep a/b/w2 within bounds
         perturb[1] <- max(0.001, min(0.095, perturb[1]))
         perturb[2] <- max(0.5, min(0.95, perturb[2]))
         perturb[3] <- max(1.05, min(29, perturb[3]))
         if (has_X && n_p >= 7) perturb[7] <- max(1.05, min(29, perturb[7]))
         begin_val[worst_idx[wi], ] <- perturb
       }
-      # Also add the exact warm-start
       begin_val[worst_idx[1], ] <- warm_row
-      # Re-evaluate grid
       which_row <- sapply(1:R_dcc, function(i) {
         args_i <- c(list(param = begin_val[i, ]), base_args)
         sum(do.call(ll_fun, args_i))
@@ -2364,13 +2167,12 @@ estimate_dcc_flex <- function(ll_fun, mat_fun, eps_t, D_t, TT,
   N_start <- max(3L, min(10L, 2L + n_breaks * 2L + as.integer(has_X) * 2L))
   top_idx <- order(which_row, decreasing = TRUE)[1:min(N_start, R_dcc)]
 
-  # --- Constraints: a>0, b>=0.5, a+b<1, w2>1, w2<30, |theta|<20 ---
   ui_list <- list()
   ci_vec  <- c()
 
   row1 <- rep(0, n_p); row1[1] <- 1
   ui_list[[length(ui_list)+1]] <- row1; ci_vec <- c(ci_vec, -1e-3)
-  # b >= 0.5 (ensures realistic DCC persistence — Colacito et al. 2011)
+
   row2 <- rep(0, n_p); row2[2] <- 1
   ui_list[[length(ui_list)+1]] <- row2; ci_vec <- c(ci_vec, -0.5)
   row3 <- rep(0, n_p); row3[1] <- -1; row3[2] <- -1
@@ -2381,19 +2183,19 @@ estimate_dcc_flex <- function(ll_fun, mat_fun, eps_t, D_t, TT,
     row5 <- rep(0, n_p); row5[7] <- 1
     ui_list[[length(ui_list)+1]] <- row5; ci_vec <- c(ci_vec, -1.001)
   }
-  # |theta_RC| < 20 (prevent extreme Fisher-z values)
+
   row_t1 <- rep(0, n_p); row_t1[5] <- 1
-  ui_list[[length(ui_list)+1]] <- row_t1; ci_vec <- c(ci_vec, 20)    # theta_RC > -20
+  ui_list[[length(ui_list)+1]] <- row_t1; ci_vec <- c(ci_vec, 20)  
   row_t2 <- rep(0, n_p); row_t2[5] <- -1
-  ui_list[[length(ui_list)+1]] <- row_t2; ci_vec <- c(ci_vec, 20)    # theta_RC < 20
+  ui_list[[length(ui_list)+1]] <- row_t2; ci_vec <- c(ci_vec, 20)   
   if (has_X) {
-    # |theta_X| < 20
+
     row_t3 <- rep(0, n_p); row_t3[6] <- 1
     ui_list[[length(ui_list)+1]] <- row_t3; ci_vec <- c(ci_vec, 20)
     row_t4 <- rep(0, n_p); row_t4[6] <- -1
     ui_list[[length(ui_list)+1]] <- row_t4; ci_vec <- c(ci_vec, 20)
   }
-  # w2_RC < 30
+
   row_ub1 <- rep(0, n_p); row_ub1[3] <- -1
   ui_list[[length(ui_list)+1]] <- row_ub1; ci_vec <- c(ci_vec, 30)
   if (has_X) {
@@ -2402,22 +2204,21 @@ estimate_dcc_flex <- function(ll_fun, mat_fun, eps_t, D_t, TT,
   }
   ui <- do.call(rbind, ui_list)
 
-  # --- Multi-start NM -> BFGS estimation ---
   neg_ll_pen_dcc <- function(p) {
     ll_val <- sum(do.call(ll_fun, c(list(param = p), base_args)))
     if (!is.finite(ll_val)) return(1e10)
     pen <- 0
     if (p[1] < 1e-4)  pen <- pen + 1e6 * (1e-4 - p[1])^2
-    if (p[2] < 0.5)   pen <- pen + 1e6 * (0.5 - p[2])^2      # b >= 0.5
+    if (p[2] < 0.5)   pen <- pen + 1e6 * (0.5 - p[2])^2     
     if (p[1] + p[2] > 0.999) pen <- pen + 1e6 * (p[1]+p[2]-0.999)^2
     if (p[3] < 1.001) pen <- pen + 1e6 * (1.001 - p[3])^2
     if (p[3] > 30)    pen <- pen + 1e6 * (p[3] - 30)^2
-    # theta_RC bounds: |p[5]| < 20
+
     if (abs(p[5]) > 20) pen <- pen + 1e6 * (abs(p[5]) - 20)^2
     if (has_X && length(p) >= 7) {
       if (p[7] < 1.001) pen <- pen + 1e6 * (1.001 - p[7])^2
       if (p[7] > 30)    pen <- pen + 1e6 * (p[7] - 30)^2
-      # theta_X bounds: |p[6]| < 20
+
       if (abs(p[6]) > 20) pen <- pen + 1e6 * (abs(p[6]) - 20)^2
     }
     -(ll_val - pen)
@@ -2448,7 +2249,6 @@ estimate_dcc_flex <- function(ll_fun, mat_fun, eps_t, D_t, TT,
   names(est_coef) <- pnames
   se <- safe_QMLE_se(m_est, ll_func = ll_fun, ll_args = base_args)
 
-  # SE sanity: |t| > 200 indicates Hessian artifact at boundary
   t_check <- abs(est_coef / se)
   suspect <- which(!is.na(t_check) & is.finite(t_check) & t_check > 200)
   if (length(suspect) > 0) {
@@ -2478,11 +2278,6 @@ estimate_dcc_flex <- function(ll_fun, mat_fun, eps_t, D_t, TT,
        n_params = n_p, n_breaks = n_breaks, has_X = has_X, m_est = m_est)
 }
 
-# =============================================================================
-# SECTION B — REPLACE EVERYTHING FROM "# B." ONWARD WITH THIS
-# =============================================================================
-
-# --- B.0 Load data ---
 load_data_is <- load_data(start_date_is, end_date_is, INDEX_TICKER)
 r_t       <- load_data_is$r_t
 MV        <- load_data_is$MV
@@ -2493,21 +2288,19 @@ macro_xts <- load_data_is$X_1
 
 cat("\n========== PAIR: BTC -", toupper(INDEX_TICKER), "==========\n")
 
-# --- B.1 Structural break test (data-driven via BIC) ---
 macro_level_xts <- load_data_is$X_level_xts
 
 break_test <- bai_perron_test(
-  series        = macro_level_xts,    # FIX 2.1: raw GEPU level (not log-diff)
-  max_breaks    = NULL,                # FIX 5: let strucchange decide max candidates
+  series        = macro_level_xts,   
+  max_breaks    = NULL,               
   selection     = "BIC",               # BIC-optimal selection
   min_supF_pval = 0.05,                # require supF significance
   start_date    = start_date_is,
   end_date      = end_date_is)
 
-breakpoints_vec <- break_test$breakpoints_vector   # NULL if 0 breaks
-n_breaks        <- break_test$n_breaks             # integer
+breakpoints_vec <- break_test$breakpoints_vector  
+n_breaks        <- break_test$n_breaks             
 
-# Build dummy list (returns empty list if n_breaks = 0)
 dummy_list <- create_dummy_variables(
   breakpoints_dates = breakpoints_vec,
   series            = macro_level_xts)
@@ -2515,14 +2308,10 @@ dummy_list <- create_dummy_variables(
 cat(sprintf("\n>>> Detected %d structural break(s). Downstream SB models will use %d dummy(ies).\n\n",
             n_breaks, length(dummy_list)))
 
-# --- B.2 Mean fit ---
-# NOTE: mu is now estimated JOINTLY inside GARCH-MIDAS (matches Fang et al. 2018)
-# mean_fit is no longer used for pre-demeaning — raw returns go directly to GARCH-MIDAS
 cat(">>> mu estimated jointly inside GARCH-MIDAS likelihood (no pre-demeaning)\n")
-# Raw returns go directly (NA rows will be dropped by complete.cases below)
+
 r_t_  <- list(r_t[[1]], r_t[[2]])
 
-# --- B.3 Align MV (drop NA rows from raw returns) ---
 db_temp <- do.call(xts::merge.xts, r_t_)
 db_temp <- db_temp[stats::complete.cases(db_temp), ]
 trading_dates_final <- index(db_temp)
@@ -2549,10 +2338,9 @@ if (nrow(db_temp) != ncol(MV[[1]])) {
   mv_x <- mv_into_mat(db_temp[,1], GEPU_diff_aligned, K=0, "monthly")
 }
 
-# --- B.4 Dummies ---
 if (length(dummy_list) == 0) {
-  dummy_input     <- NULL    # FIX 5: NULL signals "no breaks" to ugmfit_flex
-  dummy_dcc_input <- NULL    # NULL signals "no breaks" to dccmidas_ll_*_sb
+  dummy_input     <- NULL  
+  dummy_dcc_input <- NULL   
   cat(">>> No structural breaks: SB tables will be identical to no-SB tables.\n\n")
 } else {
   dummy_input <- list()
@@ -2583,7 +2371,6 @@ cat("\n", strrep("=", 70), "\n")
 cat(" GARCH-MIDAS ESTIMATION: 8 TABLES (flex wrapper)\n")
 cat(strrep("=", 70), "\n")
 
-# --- TABLES 1-2: RV only, NO breaks ---
 cat("\n>>> [Tables 1-2] GARCH-MIDAS RV-only, no SB\n")
 garch_rv_no_sb <- list()
 for (i in 1:2) {
@@ -2592,7 +2379,6 @@ for (i in 1:2) {
     K = K_vol, has_X = FALSE, dummy = NULL, R = 800)
 }
 
-# --- TABLES 3-4: RV only, WITH breaks (m breaks, auto-detected) ---
 cat("\n>>> [Tables 3-4] GARCH-MIDAS RV-only, with SB\n")
 garch_rv_sb <- list()
 for (i in 1:2) {
@@ -2601,7 +2387,6 @@ for (i in 1:2) {
     K = K_vol, has_X = FALSE, dummy = dummy_input, R = 800)
 }
 
-# --- TABLES 5-6: RV + GEPU, NO breaks ---
 cat("\n>>> [Tables 5-6] GARCH-MIDAS-X (RV+GEPU), no SB\n")
 garch_rvx_no_sb <- list()
 for (i in 1:2) {
@@ -2610,7 +2395,6 @@ for (i in 1:2) {
     K = K_vol, has_X = TRUE, dummy = NULL, R = 800)
 }
 
-# --- TABLES 7-8: RV + GEPU, WITH breaks ---
 cat("\n>>> [Tables 7-8] GARCH-MIDAS-X (RV+GEPU), with SB\n")
 garch_rvx_sb <- list()
 for (i in 1:2) {
@@ -2628,14 +2412,11 @@ cat("\n" , strrep("=", 70), "\n")
 cat(" DCC-MIDAS ESTIMATION: 4 TABLES\n")
 cat(strrep("=", 70), "\n")
 
-# ============================================================================
-# DCC STAGE: 4 tables, each with MATCHED first-stage residuals
-# ============================================================================
 db <- do.call(xts::merge.xts, r_t_)
 db <- db[stats::complete.cases(db), ]
 TT <- nrow(db)
 
-# --- Build 4 matched (eps_t, D_t) pairs ---
+# --- 
 ed_table9  <- build_eps_Dt(garch_rv_no_sb[[1]]$est_vol_in_s,
                            garch_rv_no_sb[[2]]$est_vol_in_s, db)
 ed_table10 <- build_eps_Dt(garch_rv_sb[[1]]$est_vol_in_s,
@@ -2645,14 +2426,14 @@ ed_table11 <- build_eps_Dt(garch_rvx_no_sb[[1]]$est_vol_in_s,
 ed_table12 <- build_eps_Dt(garch_rvx_sb[[1]]$est_vol_in_s,
                            garch_rvx_sb[[2]]$est_vol_in_s, db)
 
-# --- TABLE 9: RC-only, no SB
+# ---
 dcc9 <- estimate_dcc_flex(ll_fun = dccmidas_ll_rc_no_sb,
                           mat_fun = dccmidas_mat_est_rc_no_sb,
                           eps_t = ed_table9$eps_t, D_t = ed_table9$D_t, TT = TT,
                           N_c = N_c, K_c = K_corr,
                           has_X = FALSE, dummy_dcc = NULL)
 
-# --- TABLE 10: RC-only, with SB 
+# --- 
 dcc10 <- estimate_dcc_flex(ll_fun = dccmidas_ll_rc_sb,
                            mat_fun = dccmidas_mat_est_rc_sb,
                            eps_t = ed_table10$eps_t, D_t = ed_table10$D_t, TT = TT,
@@ -2660,7 +2441,7 @@ dcc10 <- estimate_dcc_flex(ll_fun = dccmidas_ll_rc_sb,
                            has_X = FALSE, dummy_dcc = dummy_dcc_input,
                            begin_val_override = coef(dcc9$m_est))
 
-# --- TABLE 11: RC+GEPU, no SB
+# ---
 dcc11 <- estimate_dcc_flex(ll_fun = dccmidas_ll,
                            mat_fun = dccmidas_mat_est_modified,
                            eps_t = ed_table11$eps_t, D_t = ed_table11$D_t, TT = TT,
@@ -2674,11 +2455,6 @@ dcc12 <- estimate_dcc_flex(ll_fun = dccmidas_ll_sb,
                            N_c = N_c, K_c = K_corr, dcc_mv = mv_x,
                            has_X = TRUE, dummy_dcc = dummy_dcc_input,
                            begin_val_override = coef(dcc11$m_est))
-
-
-# ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  PRINT ALL 12 TABLES                                                     ║
-# ╚═══════════════════════════════════════════════════════════════════════════╝
 
 cat("\n\n")
 cat(strrep("#", 80), "\n")
@@ -2766,10 +2542,6 @@ for (k in 9:12) {
 }
 
 # ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  HEDGING ANALYSIS (unchanged logic, uses full model)                      ║
-# ╚═══════════════════════════════════════════════════════════════════════════╝
-
-# ╔═══════════════════════════════════════════════════════════════════════════╗
 # ║  HEDGING ANALYSIS                                                         ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
 
@@ -2778,7 +2550,6 @@ R_B_raw   <- db_no_xts[, 1]
 R_I_raw   <- db_no_xts[, 2]
 var_I     <- var(R_I_raw, na.rm = TRUE)
 
-# Helper: compute HE from H_t array
 compute_HE <- function(H_t, R_B, R_I, var_I) {
   TT    <- dim(H_t)[3]
   gamma <- sapply(1:TT, function(tt) H_t[1, 2, tt] / H_t[1, 1, tt])
@@ -2813,7 +2584,6 @@ cat(sprintf("Delta HE (GEPU effect, no SB):   %+.6f\n", he11$HE - he9$HE))
 cat(sprintf("Delta HE (SB effect, no GEPU):   %+.6f\n", he10$HE - he9$HE))
 cat(sprintf("Delta HE (full extension):       %+.6f\n", he12$HE - he9$HE))
 
-# ---- GARCH-MIDAS Likelihood Ratio tests: H0: theta_X = 0 ----
 cat("\n=== GARCH-MIDAS LR TESTS (H0: theta_X = 0) ===\n")
 lr_test <- function(ll_unrest, ll_rest, df, label) {
   stat <- 2 * (ll_unrest - ll_rest)
@@ -2821,12 +2591,12 @@ lr_test <- function(ll_unrest, ll_rest, df, label) {
   cat(sprintf("%-55s LR=%8.4f  df=%d  p=%.6f %s\n", label, stat, df, pval,
               if (pval < 0.01) "***" else if (pval < 0.05) "**" else if (pval < 0.10) "*" else ""))
 }
-# GARCH: RV+GEPU vs RV-only (no SB)
+
 lr_test(garch_rvx_no_sb[[1]]$loglik, garch_rv_no_sb[[1]]$loglik, 2,
         "BTC:  GARCH-MIDAS-X vs GARCH-MIDAS (no SB)")
 lr_test(garch_rvx_no_sb[[2]]$loglik, garch_rv_no_sb[[2]]$loglik, 2,
         paste0(toupper(INDEX_TICKER), ": GARCH-MIDAS-X vs GARCH-MIDAS (no SB)"))
-# GARCH: RV+GEPU+SB vs RV+GEPU (SB contribution)
+
 lr_test(garch_rvx_sb[[1]]$loglik, garch_rvx_no_sb[[1]]$loglik,
         garch_rvx_sb[[1]]$n_params - garch_rvx_no_sb[[1]]$n_params,
         "BTC:  GARCH-MIDAS-X+SB vs GARCH-MIDAS-X (SB added)")
@@ -2834,7 +2604,6 @@ lr_test(garch_rvx_sb[[2]]$loglik, garch_rvx_no_sb[[2]]$loglik,
         garch_rvx_sb[[2]]$n_params - garch_rvx_no_sb[[2]]$n_params,
         paste0(toupper(INDEX_TICKER), ": GARCH-MIDAS-X+SB vs GARCH-MIDAS-X (SB added)"))
 
-# ---- Wald Joint Tests for break coefficients ----
 cat("\n=== WALD JOINT TESTS (H0: all break coefficients = 0) ===\n")
 wald_joint_test <- function(garch_obj, break_names, label) {
   coef_mat <- garch_obj$rob_coef_mat
@@ -2861,7 +2630,6 @@ wald_joint_test(garch_rvx_sb[[2]], rv_brk,          paste0(toupper(INDEX_TICKER)
 wald_joint_test(garch_rvx_sb[[2]], x_brk,           paste0(toupper(INDEX_TICKER), " Table 8: GEPU breaks"))
 wald_joint_test(garch_rvx_sb[[2]], c(rv_brk, x_brk),paste0(toupper(INDEX_TICKER), " Table 8: ALL breaks (joint)"))
 
-# ---- DCC-MIDAS Likelihood Ratio tests ----
 cat("\n=== DCC-MIDAS LR TESTS ===\n")
 cat("NOTE: Each DCC model uses matched first-stage GARCH residuals.\n")
 cat("      LR tests are informative but not strictly nested due to different first-stages.\n\n")
@@ -2869,7 +2637,6 @@ lr_test(dcc11$llk, dcc9$llk,  dcc11$n_params - dcc9$n_params,  "Table11 vs Table
 lr_test(dcc10$llk, dcc9$llk,  dcc10$n_params - dcc9$n_params,  "Table10 vs Table9  (SB effect, no GEPU)")
 lr_test(dcc12$llk, dcc11$llk, dcc12$n_params - dcc11$n_params, "Table12 vs Table11 (SB added to GEPU)")
 
-# ---- Diebold-Mariano test (properly with ts objects) ----
 cat("\n=== FORECAST COMPARISON TESTS ===\n")
 loss_base <- he9$R_H^2
 loss_full <- he12$R_H^2
@@ -2884,12 +2651,11 @@ if (!is.null(dm_result)) {
               if (dm_result$p.value < 0.05) "**" else ""))
 }
 
-# ---- Clark-West (2007) MSPE-adjusted test for nested models ----
 cw_diff  <- (loss_base - loss_full) + (he9$R_H - he12$R_H)^2
 valid_cw <- !is.na(cw_diff)
 cw_mean  <- mean(cw_diff[valid_cw])
 cw_nw_se <- tryCatch({
-  # Newey-West HAC standard error (bandwidth = floor(T^(1/3)))
+  
   T_cw <- sum(valid_cw)
   bw   <- floor(T_cw^(1/3))
   cw_centered <- cw_diff[valid_cw] - cw_mean
@@ -2904,7 +2670,6 @@ cat(sprintf("CW Test  (Table12 vs Table9): stat=%7.4f  p=%.4f %s\n",
             cw_stat, cw_pval,
             if (cw_pval < 0.05) "**" else ""))
 
-# Also test Table 11 vs Table 9 (GEPU effect without SB)
 loss_gepu <- he11$R_H^2
 cw_diff2  <- (loss_base - loss_gepu) + (he9$R_H - he11$R_H)^2
 valid_cw2 <- !is.na(cw_diff2)
@@ -2916,13 +2681,12 @@ cat(sprintf("CW Test  (Table11 vs Table9): stat=%7.4f  p=%.4f %s\n",
             cw_stat2, cw_pval2,
             if (cw_pval2 < 0.05) "**" else ""))
 
-# ---- Residual diagnostics (methodology: Ljung-Box Q(10,20) + ARCH LM) ----
 cat("\n=== RESIDUAL DIAGNOSTICS ===\n")
 
 diag_one <- function(garch_obj, r_t_i, label) {
   vol_total <- as.numeric(garch_obj$est_vol_in_s)
   resid_raw <- as.numeric(r_t_i)
-  # mu is now param[1] in the jointly estimated model
+
   mu_hat <- garch_obj$rob_coef_mat["mu", "Estimate"]
   xi <- (resid_raw - mu_hat) / vol_total
   xi_clean <- xi[!is.na(xi) & is.finite(xi)]
@@ -2971,10 +2735,9 @@ diag_one(garch_rvx_sb[[2]],    r_t_[[2]], "Table 8: RV+GEPU, with SB (full)")
 
 cat("\n=== HEDGING EFFECTIVENESS WITH TRANSACTION COSTS ===\n")
 compute_HE_tc <- function(H_t, R_B, R_I, var_I, cost_bps) {
-  c <- cost_bps / 10000  # convert bps to decimal
+  c <- cost_bps / 10000 
   TT <- dim(H_t)[3]
   gamma <- sapply(1:TT, function(tt) H_t[1, 2, tt] / H_t[1, 1, tt])
-  # Turnover cost: c * |gamma_t - gamma_{t-1}|
   turnover <- c(0, abs(diff(gamma)))
   R_H_net <- R_I - gamma * R_B - c * turnover * abs(R_B)
   var_H_net <- var(R_H_net, na.rm = TRUE)
