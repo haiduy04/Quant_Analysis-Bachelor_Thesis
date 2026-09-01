@@ -1,6 +1,6 @@
 # A. =========================================================================== ------------ ENGINEER ------------ ===================================================================== 
 
-# 0. SETUP ===================================================================================================================================================
+# 0. SETUP ==============================================================================================================================================================================
 
 library(roll)
 library(xts)
@@ -426,7 +426,6 @@ bai_perron_test <- function(series, max_breaks = NULL,
 }
 
 # CREATE DUMMY VARIABLES
-
 create_dummy_variables <- function(breakpoints_dates, series) {
   library(xts)
 
@@ -691,8 +690,6 @@ GM_LL_flex <- function(param, daily_ret, mv_m, mv_m_m = NULL, K,
                        dummy = NULL, has_X = TRUE) {
 
   n_breaks <- if (is.null(dummy)) 0L else length(dummy)
-
-  # --- Unpack core parameters ---
   mu       <- param[1]
   alpha    <- param[2]
   beta     <- param[3]
@@ -1705,7 +1702,7 @@ dcc_fit_modify <- function (r_t,
   start <- Sys.time()
 
 
-  #---------------------------------------------------
+  # ============================================================================
 
   garch_logL <- list()
 
@@ -1832,8 +1829,6 @@ dcc_fit_modify <- function (r_t,
   mat_coef[, 4] <- round(
     apply(rbind(est_coef / se_dcc), 1,
           function(x) 2 * (1 - stats::pnorm(abs(x)))), 6)
-
-  #=============================================================================
 
   if (corr_model == "DCCMIDAS") {
     dcc_mat_est_fin <- dccmidas_mat_est_modified(est_coef, eps_t, D_t, lag_fun = lag_fun, N_c = N_c, K_c = K_c, dcc_mv = dcc_mv)
@@ -2066,8 +2061,6 @@ hedging_performance_analysis <- function(df) {
     Sharpe_Comparison = sharpe_comparison_df
   ))
 }
-
-# ============================================================================
 
 build_eps_Dt <- function(sd_btc, sd_idx, db) {
   TT <- nrow(db)
@@ -2363,10 +2356,8 @@ if (length(dummy_list) == 0) {
               length(dummy_input)))
 }
 
-
-# ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  GARCH-MIDAS ESTIMATION                                                   ║
-# ╚═══════════════════════════════════════════════════════════════════════════╝
+# GARCH-MIDAS ESTIMATION
+                  
 cat("\n", strrep("=", 70), "\n")
 cat(" GARCH-MIDAS ESTIMATION: 8 TABLES (flex wrapper)\n")
 cat(strrep("=", 70), "\n")
@@ -2403,10 +2394,8 @@ for (i in 1:2) {
     K = K_vol, has_X = TRUE, dummy = dummy_input, R = 800)
 }
 
-# ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  DCC-MIDAS ESTIMATION                                                     ║
-# ║  All DCC models use eps_t from the GARCH-MIDAS-X with SB (full model)     ║
-# ╚═══════════════════════════════════════════════════════════════════════════╝
+# DCC-MIDAS ESTIMATION                                                     
+# All DCC models use eps_t from the GARCH-MIDAS-X with SB (full model estimation)     
 
 cat("\n" , strrep("=", 70), "\n")
 cat(" DCC-MIDAS ESTIMATION: 4 TABLES\n")
@@ -2448,7 +2437,7 @@ dcc11 <- estimate_dcc_flex(ll_fun = dccmidas_ll,
                            N_c = N_c, K_c = K_corr, dcc_mv = mv_x,
                            has_X = TRUE, dummy_dcc = NULL)
 
-# --- TABLE 12: RC+GEPU, with SB 
+# --- 
 dcc12 <- estimate_dcc_flex(ll_fun = dccmidas_ll_sb,
                            mat_fun = dccmidas_mat_est_sb,
                            eps_t = ed_table12$eps_t, D_t = ed_table12$D_t, TT = TT,
@@ -2541,10 +2530,7 @@ for (k in 9:12) {
       "  n_params:", obj$n_params, "  n_breaks:", obj$n_breaks, "\n")
 }
 
-# ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  HEDGING ANALYSIS                                                         ║
-# ╚═══════════════════════════════════════════════════════════════════════════╝
-
+# HEDGING ANALYSIS                                                         
 db_no_xts <- zoo::coredata(db)
 R_B_raw   <- db_no_xts[, 1]
 R_I_raw   <- db_no_xts[, 2]
@@ -2729,10 +2715,7 @@ diag_one(garch_rv_sb[[2]],     r_t_[[2]], "Table 4: RV only, with SB")
 diag_one(garch_rvx_no_sb[[2]], r_t_[[2]], "Table 6: RV+GEPU, no SB")
 diag_one(garch_rvx_sb[[2]],    r_t_[[2]], "Table 8: RV+GEPU, with SB (full)")
 
-# ╔═══════════════════════════════════════════════════════════════════════════╗
-# ║  TRANSACTION COST ANALYSIS                                                ║
-# ╚═══════════════════════════════════════════════════════════════════════════╝
-
+# TRANSACTION COST ANALYSIS                                                
 cat("\n=== HEDGING EFFECTIVENESS WITH TRANSACTION COSTS ===\n")
 compute_HE_tc <- function(H_t, R_B, R_I, var_I, cost_bps) {
   c <- cost_bps / 10000 
