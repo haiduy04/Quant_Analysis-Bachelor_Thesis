@@ -1,18 +1,17 @@
-# Quantitative Finance & Advanced Econometrics – Bachelor Thesis
+# Modeling Bitcoin Portfolio Risk & Hedging Effectiveness using Regime-Aware DCC-MIDAS-X Models
 
 ## 1. Project Name
 
-* **Bitcoin Volatility and Hedging Effectiveness under Global Uncertainty: A Structural-Break DCC-MIDAS-X Approach**
+* Bachelor Graduation Thesis - June 2026 - Foreign Trade University HCM (FTU2)
 
-* **Evaluation Score: Excellent**
+* Evaluation Score: Excellent
 
 ## 2. Domain
 
 * Quantitative Finance
 * Financial Risk Management
-* Advanced Econometrics
+* Programming, Software Engineer
 * Portfolio Hedging
-* R Statistical Programming
 
 ## 3. Served Stakeholder
 
